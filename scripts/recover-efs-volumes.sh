@@ -8,44 +8,28 @@ Usage: recover-efs-volumes.sh
 Consumes efs-pvc-map.csv, creates one DR EFS access point per original PVC
 path while preserving POSIX/root metadata, creates static PV/PVC objects using
 ${DR_EFS}::${DR_ACCESS_POINT_ID}, and waits for each claim to bind.
+
+Run while logged in to the DR cluster.
 EOF
 }
 
-
 while [ $# -gt 0 ]; do
   case "$1" in
+    -h|--help) usage; exit 0 ;;
     *) echo "Unknown argument: $1" >&2; usage; exit 1 ;;
   esac
 done
-
-
-SCRIPT_DIR=$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-REPO_ROOT=$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || true)
-if [ -z "$REPO_ROOT" ]; then
-  REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/../../../.." && pwd)
-fi
-
-if [ -z "${TF_VAR_admin_password:-}" ] && [ -f "${REPO_ROOT}/.env.fallback" ]; then
-  source "${REPO_ROOT}/.env.fallback"
-fi
 
 : "${DR_CLUSTER_NAME:?}"
 : "${DR_REGION:?}"
 : "${DR_EFS:?}"
 : "${EFS_MAPPING_FILE:?}"
-: "${TF_VAR_admin_password:?Source .env.fallback from the repository root before running this script.}"
 
 export AWS_PAGER=""
 
-[ -f "$EFS_MAPPING_FILE" ] || { echo "Mapping file not found: $EFS_MAPPING_FILE" >&2; exit 1; }
+oc whoami >/dev/null
 
-login_cluster() {
-  local cluster_name="$1"
-  local api
-  api=$(rosa describe cluster -c "$cluster_name" -o json | jq -r '.api.url')
-  oc login "$api" --username admin --password "$TF_VAR_admin_password" >/dev/null
-  oc get nodes >/dev/null
-}
+[ -f "$EFS_MAPPING_FILE" ] || { echo "Mapping file not found: $EFS_MAPPING_FILE" >&2; exit 1; }
 
 wait_access_point_available() {
   local access_point_id="$1"
@@ -58,17 +42,16 @@ wait_access_point_available() {
       --output text)
     [ "$state" = "available" ] && return 0
     [ "$state" = "error" ] && { echo "Access point ${access_point_id} entered error state." >&2; return 1; }
-    printf '[%s] access-point/%s state=%s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$access_point_id" "$state"
+    printf '[%s] access-point/%s state=%s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$access_point_id" "$state" >&2
     sleep 5
   done
   echo "Timed out waiting for access point ${access_point_id}." >&2
   return 1
 }
 
-echo "Reconstructing DR EFS access points and static PVCs on ${DR_CLUSTER_NAME}."
-login_cluster "$DR_CLUSTER_NAME"
+echo "Reconstructing DR EFS access points and static PVCs on ${DR_CLUSTER_NAME}." >&2
 
-oc create namespace dr-demo --dry-run=client -o yaml | oc apply -f -
+oc create namespace dr-demo --dry-run=client -o yaml | oc apply -f - >&2
 
 {
   read -r header
@@ -99,9 +82,9 @@ oc create namespace dr-demo --dry-run=client -o yaml | oc apply -f -
       --output text)
 
     wait_access_point_available "$dr_access_point_id"
-    echo "${pvc} -> ${DR_EFS}::${dr_access_point_id} | path=${efs_path}"
+    echo "${pvc} -> ${DR_EFS}::${dr_access_point_id} | path=${efs_path}" >&2
 
-    cat <<EOF | oc apply -f -
+    cat <<EOF | oc apply -f - >&2
 apiVersion: v1
 kind: PersistentVolume
 metadata:
@@ -143,11 +126,11 @@ EOF
   while IFS=, read -r namespace pvc rest; do
     [ -n "${pvc:-}" ] || continue
     until [ "$(oc get pvc "$pvc" -n "$namespace" -o jsonpath='{.status.phase}')" = "Bound" ]; do
-      echo "Waiting for ${namespace}/${pvc} to bind..."
+      echo "Waiting for ${namespace}/${pvc} to bind..." >&2
       sleep 5
     done
-    echo "${namespace}/${pvc} is Bound"
+    echo "${namespace}/${pvc} is Bound" >&2
   done
 } < "$EFS_MAPPING_FILE"
 
-echo "DR EFS static volume recovery completed."
+echo "DR EFS static volume recovery completed." >&2

@@ -7,26 +7,17 @@ Usage: validate-dr-recovery.sh
 
 Validates DR workload readiness, PVC/PV/EFS access-point mapping, old and new
 EFS markers, old and new S3 markers, and the route hostname.
+
+Run while logged in to the DR cluster.
 EOF
 }
 
-
 while [ $# -gt 0 ]; do
   case "$1" in
+    -h|--help) usage; exit 0 ;;
     *) echo "Unknown argument: $1" >&2; usage; exit 1 ;;
   esac
 done
-
-
-SCRIPT_DIR=$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-REPO_ROOT=$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || true)
-if [ -z "$REPO_ROOT" ]; then
-  REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/../../../.." && pwd)
-fi
-
-if [ -z "${TF_VAR_admin_password:-}" ] && [ -f "${REPO_ROOT}/.env.fallback" ]; then
-  source "${REPO_ROOT}/.env.fallback"
-fi
 
 : "${DR_CLUSTER_NAME:?}"
 : "${DR_REGION:?}"
@@ -34,18 +25,10 @@ fi
 : "${APP_BUCKET_DR:?}"
 : "${EFS_MAPPING_FILE:?}"
 : "${VALIDATION_ID:?}"
-: "${TF_VAR_admin_password:?Source .env.fallback from the repository root before running this script.}"
 
 export AWS_PAGER=""
 
-
-login_cluster() {
-  local cluster_name="$1"
-  local api
-  api=$(rosa describe cluster -c "$cluster_name" -o json | jq -r '.api.url')
-  oc login "$api" --username admin --password "$TF_VAR_admin_password" >/dev/null
-  oc get nodes >/dev/null
-}
+oc whoami >/dev/null
 
 fail_with_workload_diagnostics() {
   local message="$1"
@@ -56,7 +39,6 @@ fail_with_workload_diagnostics() {
 }
 
 echo "Validating recovered workload on ${DR_CLUSTER_NAME}."
-login_cluster "$DR_CLUSTER_NAME"
 
 for attempt in $(seq 1 40); do
   ready_replicas=$(oc get sts flight-recorder -n dr-demo -o jsonpath='{.status.readyReplicas}' 2>/dev/null || true)

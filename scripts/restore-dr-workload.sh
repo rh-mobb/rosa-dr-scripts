@@ -7,49 +7,31 @@ Usage: restore-dr-workload.sh
 
 Creates an OADP Restore from BACKUP_NAME, waits for completion, then applies
 DR-specific service-account IAM annotations and S3/region environment values.
+
+Run while logged in to the DR cluster.
 EOF
 }
 
-
 while [ $# -gt 0 ]; do
   case "$1" in
+    -h|--help) usage; exit 0 ;;
     *) echo "Unknown argument: $1" >&2; usage; exit 1 ;;
   esac
 done
-
-
-SCRIPT_DIR=$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-REPO_ROOT=$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || true)
-if [ -z "$REPO_ROOT" ]; then
-  REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/../../../.." && pwd)
-fi
-
-if [ -z "${TF_VAR_admin_password:-}" ] && [ -f "${REPO_ROOT}/.env.fallback" ]; then
-  source "${REPO_ROOT}/.env.fallback"
-fi
 
 : "${DR_CLUSTER_NAME:?}"
 : "${DR_REGION:?}"
 : "${BACKUP_NAME:?}"
 : "${APP_BUCKET_DR:?}"
 : "${APP_S3_ROLE_ARN_DR:?}"
-: "${TF_VAR_admin_password:?Source .env.fallback from the repository root before running this script.}"
 
-
-login_cluster() {
-  local cluster_name="$1"
-  local api
-  api=$(rosa describe cluster -c "$cluster_name" -o json | jq -r '.api.url')
-  oc login "$api" --username admin --password "$TF_VAR_admin_password" >/dev/null
-  oc get nodes >/dev/null
-}
+oc whoami >/dev/null
 
 RESTORE_NAME="dr-restore-$(date +%Y%m%d-%H%M)"
 export RESTORE_NAME
 echo "export RESTORE_NAME=$RESTORE_NAME"
 
 echo "Creating OADP Restore ${RESTORE_NAME} on ${DR_CLUSTER_NAME}." >&2
-login_cluster "$DR_CLUSTER_NAME"
 
 cat <<EOF | oc apply -f - >&2
 apiVersion: velero.io/v1
@@ -73,7 +55,7 @@ EOF
 for attempt in $(seq 1 60); do
   phase=$(oc get restore -n openshift-adp "$RESTORE_NAME" -o jsonpath='{.status.phase}' 2>/dev/null || true)
   phase=${phase:-Pending}
-  printf '[%s] restore/%s phase=%s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$RESTORE_NAME" "$phase"
+  printf '[%s] restore/%s phase=%s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$RESTORE_NAME" "$phase" >&2
   case "$phase" in
     Completed) break ;;
     Failed|PartiallyFailed)
@@ -92,12 +74,12 @@ done
 echo "Applying DR-specific S3 role and environment values." >&2
 oc annotate sa/s3-writer sa/dashboard -n dr-demo \
   eks.amazonaws.com/role-arn="$APP_S3_ROLE_ARN_DR" \
-  --overwrite
+  --overwrite >&2
 
 oc set env deployment/telemetry-transmitter deployment/mission-control -n dr-demo \
   S3_BUCKET="$APP_BUCKET_DR" \
   AWS_REGION="$DR_REGION" \
   CLUSTER_NAME="$DR_CLUSTER_NAME" \
-  AWS_ROLE_ARN="$APP_S3_ROLE_ARN_DR"
+  AWS_ROLE_ARN="$APP_S3_ROLE_ARN_DR" >&2
 
 echo "DR workload restore and configuration completed." >&2
