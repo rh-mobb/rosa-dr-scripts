@@ -79,6 +79,11 @@ oc create namespace dr-demo --dry-run=client -o yaml | oc apply -f - >&2
       --root-directory "Path=${efs_path},CreationInfo={OwnerUid=${root_owner_uid},OwnerGid=${root_owner_gid},Permissions=${root_permissions}}" \
       --tags "Key=Name,Value=dr-${pvc}" "Key=SourceAccessPoint,Value=${source_ap_id}" "Key=SourcePVC,Value=${namespace}/${pvc}" \
       --query 'AccessPointId' \
+      --output text 2>/dev/null) || \
+    dr_access_point_id=$(aws efs describe-access-points \
+      --file-system-id "$DR_EFS" \
+      --region "$DR_REGION" \
+      --query "AccessPoints[?RootDirectory.Path=='${efs_path}'].AccessPointId | [0]" \
       --output text)
 
     wait_access_point_available "$dr_access_point_id"
