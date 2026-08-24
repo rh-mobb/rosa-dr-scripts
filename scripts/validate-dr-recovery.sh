@@ -96,8 +96,10 @@ echo "Validating recovered PV handles and DR access-point root paths."
   done
 } < "$EFS_MAPPING_FILE"
 
+EFS_MOUNT="/data/flight-recorder"
+
 echo "Pre-failover EFS marker:"
-oc exec -n dr-demo deploy/mission-control -- cat "/shared/validation-${VALIDATION_ID}.txt"
+oc exec -n dr-demo deploy/mission-control -- cat "${EFS_MOUNT}/validation-${VALIDATION_ID}.txt"
 
 echo "Pre-failover S3 marker:"
 aws s3 cp "s3://${APP_BUCKET_DR}/validation/${VALIDATION_ID}.txt" - --region "$DR_REGION"
@@ -108,7 +110,7 @@ echo "export DR_VALIDATION_ID=$DR_VALIDATION_ID"
 
 echo "New DR EFS marker:"
 oc exec -n dr-demo deploy/mission-control -- \
-  sh -c "echo efs-${DR_VALIDATION_ID} > /shared/validation-${DR_VALIDATION_ID}.txt && cat /shared/validation-${DR_VALIDATION_ID}.txt"
+  sh -c "echo efs-${DR_VALIDATION_ID} > ${EFS_MOUNT}/validation-${DR_VALIDATION_ID}.txt && cat ${EFS_MOUNT}/validation-${DR_VALIDATION_ID}.txt"
 
 echo "New DR S3 marker:"
 s3_marker_file=$(mktemp)
