@@ -3,28 +3,29 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: configure-oadp.sh --cluster NAME --bucket BUCKET
+Usage: configure-oadp.sh --cluster NAME
 
-Installs OADP on the currently logged-in cluster and configures a DPA.
+Installs the OADP operator on the currently logged-in cluster and configures
+IAM resources (policy, role, cloud-credentials secret) using IRSA.
 Detects region, AWS account, and OIDC endpoint from the cluster name.
 Requires OADP_BUCKET_PRIMARY and OADP_BUCKET_DR in the environment.
+
+The DataProtectionApplication (DPA) is not created by this script. Apply the
+DPA separately after the operator is installed.
 EOF
 }
 
 CLUSTER_NAME=""
-BUCKET=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --cluster) CLUSTER_NAME="$2"; shift 2 ;;
-    --bucket) BUCKET="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown argument: $1" >&2; usage; exit 1 ;;
   esac
 done
 
 [ -n "$CLUSTER_NAME" ] || { echo "--cluster is required" >&2; exit 1; }
-[ -n "$BUCKET" ] || { echo "--bucket is required" >&2; exit 1; }
 
 REGION=$(rosa describe cluster -c "$CLUSTER_NAME" -o json | jq -r '.region.id')
 AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
@@ -33,7 +34,7 @@ OIDC_ENDPOINT=$(rosa describe cluster -c "$CLUSTER_NAME" -o json | jq -r '.aws.s
 : "${OADP_BUCKET_PRIMARY:?}"
 : "${OADP_BUCKET_DR:?}"
 
-echo "Cluster: $CLUSTER_NAME  Region: $REGION  Bucket: $BUCKET" >&2
+echo "Cluster: $CLUSTER_NAME  Region: $REGION" >&2
 
 wait_subscription_csv_succeeded() {
   local namespace="$1"
@@ -222,38 +223,8 @@ oc create secret generic cloud-credentials \
   --from-file=cloud="$CREDENTIALS" \
   --dry-run=client -o yaml | oc apply -f - >&2
 
-cat <<EOF | oc apply -f - >&2
-apiVersion: oadp.openshift.io/v1alpha1
-kind: DataProtectionApplication
-metadata:
-  name: dr-demo-dpa
-  namespace: openshift-adp
-spec:
-  configuration:
-    velero:
-      defaultPlugins:
-        - aws
-        - openshift
-        - csi
-    nodeAgent:
-      enable: false
-      uploaderType: kopia
-  backupLocations:
-    - velero:
-        provider: aws
-        default: true
-        objectStorage:
-          bucket: ${BUCKET}
-          prefix: velero
-        config:
-          region: ${REGION}
-        credential:
-          name: cloud-credentials
-          key: cloud
-EOF
-
 VAR_PREFIX=$(echo "$CLUSTER_NAME" | tr '-' '_')
 echo "export OADP_POLICY_ARN=$POLICY_ARN"
 echo "export OADP_ROLE_ARN_${VAR_PREFIX}=$ROLE_ARN"
 
-echo "OADP configuration submitted for $CLUSTER_NAME. Verify BSL availability before continuing." >&2
+echo "OADP operator installed for $CLUSTER_NAME. Create the DataProtectionApplication next." >&2
