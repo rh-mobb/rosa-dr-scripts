@@ -60,7 +60,7 @@ echo "export BACKUP_NAME=$BACKUP_NAME"
 echo "Creating OADP Backup ${BACKUP_NAME} on ${PRIMARY_CLUSTER_NAME}." >&2
 login_cluster "$PRIMARY_CLUSTER_NAME"
 
-cat <<EOF | oc apply -f -
+cat <<EOF | oc apply -f - >&2
 apiVersion: velero.io/v1
 kind: Backup
 metadata:

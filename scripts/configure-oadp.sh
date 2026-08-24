@@ -183,7 +183,7 @@ ROLE_ARN=$(aws iam get-role --role-name "$ROLE_NAME" --query 'Role.Arn' --output
 echo "Installing OADP operator..." >&2
 oc create namespace openshift-adp >/dev/null 2>&1 || true
 
-cat <<'EOF' | oc apply -f -
+cat <<'EOF' | oc apply -f - >&2
 apiVersion: operators.coreos.com/v1
 kind: OperatorGroup
 metadata:
@@ -220,9 +220,9 @@ EOF
 oc create secret generic cloud-credentials \
   -n openshift-adp \
   --from-file=cloud="$CREDENTIALS" \
-  --dry-run=client -o yaml | oc apply -f -
+  --dry-run=client -o yaml | oc apply -f - >&2
 
-cat <<EOF | oc apply -f -
+cat <<EOF | oc apply -f - >&2
 apiVersion: oadp.openshift.io/v1alpha1
 kind: DataProtectionApplication
 metadata:
@@ -252,7 +252,8 @@ spec:
           key: cloud
 EOF
 
+VAR_PREFIX=$(echo "$CLUSTER_NAME" | tr '-' '_')
 echo "export OADP_POLICY_ARN=$POLICY_ARN"
-echo "export OADP_ROLE_ARN_${CLUSTER_NAME}=$ROLE_ARN"
+echo "export OADP_ROLE_ARN_${VAR_PREFIX}=$ROLE_ARN"
 
 echo "OADP configuration submitted for $CLUSTER_NAME. Verify BSL availability before continuing." >&2

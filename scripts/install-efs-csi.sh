@@ -60,7 +60,7 @@ wait_deployment_available() {
   local namespace="$1"
   local deployment="$2"
   oc wait "deployment/${deployment}" -n "$namespace" \
-    --for=condition=Available --timeout=900s
+    --for=condition=Available --timeout=900s >&2
 }
 
 wait_serviceaccount() {
@@ -187,7 +187,7 @@ aws iam attach-role-policy \
   --policy-arn "$POLICY_ARN" >/dev/null 2>&1 || true
 
 echo "Installing EFS CSI Driver Operator..." >&2
-cat <<EOF | oc apply -f -
+cat <<EOF | oc apply -f - >&2
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -216,7 +216,7 @@ EOF
 wait_subscription_csv_succeeded "$NAMESPACE" "aws-efs-csi-driver-operator"
 wait_serviceaccount "$NAMESPACE" "aws-efs-csi-driver-operator"
 
-cat <<EOF | oc apply -f -
+cat <<EOF | oc apply -f - >&2
 apiVersion: v1
 kind: Secret
 metadata:
@@ -229,7 +229,7 @@ stringData:
     web_identity_token_file = /var/run/secrets/openshift/serviceaccount/token
 EOF
 
-cat <<'EOF' | oc apply -f -
+cat <<'EOF' | oc apply -f - >&2
 apiVersion: operator.openshift.io/v1
 kind: ClusterCSIDriver
 metadata:
@@ -266,9 +266,10 @@ else
   echo "WARNING: Could not detect worker IAM role. Attach $POLICY_ARN to the worker role manually." >&2
 fi
 
-echo "export ${CLUSTER_NAME}_EFS_CSI_ROLE_NAME=$ROLE_NAME"
-echo "export ${CLUSTER_NAME}_EFS_CSI_ROLE_ARN=$ROLE_ARN"
-echo "export ${CLUSTER_NAME}_EFS_CSI_POLICY_NAME=$POLICY_NAME"
-echo "export ${CLUSTER_NAME}_EFS_CSI_POLICY_ARN=$POLICY_ARN"
+VAR_PREFIX=$(echo "$CLUSTER_NAME" | tr '-' '_')
+echo "export ${VAR_PREFIX}_EFS_CSI_ROLE_NAME=$ROLE_NAME"
+echo "export ${VAR_PREFIX}_EFS_CSI_ROLE_ARN=$ROLE_ARN"
+echo "export ${VAR_PREFIX}_EFS_CSI_POLICY_NAME=$POLICY_NAME"
+echo "export ${VAR_PREFIX}_EFS_CSI_POLICY_ARN=$POLICY_ARN"
 
 echo "EFS CSI setup completed for $CLUSTER_NAME." >&2

@@ -51,7 +51,7 @@ echo "export RESTORE_NAME=$RESTORE_NAME"
 echo "Creating OADP Restore ${RESTORE_NAME} on ${DR_CLUSTER_NAME}." >&2
 login_cluster "$DR_CLUSTER_NAME"
 
-cat <<EOF | oc apply -f -
+cat <<EOF | oc apply -f - >&2
 apiVersion: velero.io/v1
 kind: Restore
 metadata:
