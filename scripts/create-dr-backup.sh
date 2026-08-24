@@ -5,9 +5,9 @@ usage() {
   cat <<'EOF'
 Usage: create-dr-backup.sh [--sync-to-dr-for-validation]
 
-Creates an OADP Backup for dr-demo, exports BACKUP_NAME, waits for the backup
-to complete, and waits for the exact backup object prefix to replicate to the
-DR bucket.
+Waits for the OADP Backup named by BACKUP_NAME to complete, lists the backup
+objects in the primary OADP bucket, and waits for the exact backup prefix to
+replicate to the DR OADP bucket through S3 CRR.
 
 Run while logged in to the primary cluster.
 
@@ -26,7 +26,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-: "${PRIMARY_CLUSTER_NAME:?}"
+: "${BACKUP_NAME:?}"
 : "${PRIMARY_REGION:?}"
 : "${DR_REGION:?}"
 : "${OADP_BUCKET_PRIMARY:?}"
@@ -36,30 +36,7 @@ export AWS_PAGER=""
 
 oc whoami >/dev/null
 
-BACKUP_NAME="dr-demo-$(date +%Y%m%d-%H%M)"
-export BACKUP_NAME
-echo "export BACKUP_NAME=$BACKUP_NAME"
-
-echo "Creating OADP Backup ${BACKUP_NAME} on ${PRIMARY_CLUSTER_NAME}." >&2
-
-cat <<EOF | oc apply -f - >&2
-apiVersion: velero.io/v1
-kind: Backup
-metadata:
-  name: ${BACKUP_NAME}
-  namespace: openshift-adp
-spec:
-  includedNamespaces:
-    - dr-demo
-  excludedResources:
-    - pods
-    - replicasets.apps
-    - persistentvolumes
-    - persistentvolumeclaims
-  storageLocation: dr-demo-dpa-1
-  defaultVolumesToFsBackup: false
-  snapshotVolumes: false
-EOF
+echo "Waiting for OADP Backup ${BACKUP_NAME} to complete." >&2
 
 for attempt in $(seq 1 60); do
   phase=$(oc get backup -n openshift-adp "$BACKUP_NAME" -o jsonpath='{.status.phase}' 2>/dev/null || true)
