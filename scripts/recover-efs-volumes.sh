@@ -89,11 +89,20 @@ oc create namespace dr-demo --dry-run=client -o yaml | oc apply -f - >&2
     wait_access_point_available "$dr_access_point_id"
     echo "${pvc} -> ${DR_EFS}::${dr_access_point_id} | path=${efs_path}" >&2
 
+    if oc get pv "$static_pv" >/dev/null 2>&1; then
+      pv_phase=$(oc get pv "$static_pv" -o jsonpath='{.status.phase}')
+      if [ "$pv_phase" = "Released" ]; then
+        oc patch pv "$static_pv" --type=json -p='[{"op":"remove","path":"/spec/claimRef"}]' >&2
+      fi
+    fi
+
     cat <<EOF | oc apply -f - >&2
 apiVersion: v1
 kind: PersistentVolume
 metadata:
   name: ${static_pv}
+  labels:
+    app.kubernetes.io/managed-by: recover-efs-volumes
 spec:
   capacity:
     storage: ${requested_storage}
