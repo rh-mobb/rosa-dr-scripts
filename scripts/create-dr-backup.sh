@@ -5,9 +5,9 @@ usage() {
   cat <<'EOF'
 Usage: create-dr-backup.sh [--sync-to-dr-for-validation]
 
-Creates an OADP Backup for dr-demo, persists BACKUP_NAME in dr.env, waits for
-the backup to complete, waits for the exact backup object prefix to replicate
-to the DR bucket, and verifies the exact backup name appears on the DR cluster.
+Creates an OADP Backup for dr-demo, exports BACKUP_NAME, waits for the backup
+to complete, waits for the exact backup object prefix to replicate to the DR
+bucket, and verifies the exact backup name appears on the DR cluster.
 
 Use --sync-to-dr-for-validation only for deterministic validation runs where
 you intentionally do not want to wait for S3 CRR timing.

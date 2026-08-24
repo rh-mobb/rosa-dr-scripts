@@ -3,27 +3,24 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: install-efs-csi.sh --cluster NAME --region REGION
+Usage: install-efs-csi.sh --cluster NAME
 
-Installs/configures EFS CSI prerequisites for the currently logged-in cluster.
-Writes generated IAM values to the shared dr.env file.
+Installs the AWS EFS CSI Driver Operator on the currently logged-in cluster.
+Detects region, AWS account, and OIDC endpoint from the cluster name.
 EOF
 }
 
 CLUSTER_NAME=""
-REGION=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --cluster) CLUSTER_NAME="$2"; shift 2 ;;
-    --region) REGION="$2"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
     *) echo "Unknown argument: $1" >&2; usage; exit 1 ;;
   esac
 done
 
 [ -n "$CLUSTER_NAME" ] || { echo "--cluster is required" >&2; exit 1; }
-[ -n "$REGION" ] || { echo "--region is required" >&2; exit 1; }
-
 
 wait_subscription_csv_succeeded() {
   local namespace="$1"
@@ -95,7 +92,10 @@ ensure_policy_version() {
         --policy-arn "$policy_arn" \
         --query 'sort_by(Versions[?IsDefaultVersion==`false`], &CreateDate)[0].VersionId' \
         --output text)
-      require_nonempty_policy_version "$policy_arn" "$old_version"
+      if [ -z "$old_version" ] || [ "$old_version" = "None" ]; then
+        echo "Cannot create a new policy version for ${policy_arn}; no non-default version is available to delete." >&2
+        exit 1
+      fi
       aws iam delete-policy-version \
         --policy-arn "$policy_arn" \
         --version-id "$old_version" >/dev/null
@@ -111,17 +111,12 @@ ensure_policy_version() {
   fi
 }
 
-require_nonempty_policy_version() {
-  local policy_arn="$1"
-  local version_id="$2"
-  if [ -z "$version_id" ] || [ "$version_id" = "None" ]; then
-    echo "Cannot create a new policy version for ${policy_arn}; no non-default version is available to delete." >&2
-    exit 1
-  fi
-}
-
+REGION=$(rosa describe cluster -c "$CLUSTER_NAME" -o json | jq -r '.region.id')
 AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 OIDC_ENDPOINT=$(rosa describe cluster -c "$CLUSTER_NAME" -o json | jq -r '.aws.sts.oidc_endpoint_url' | sed 's|https://||')
+
+echo "Cluster: $CLUSTER_NAME  Region: $REGION  Account: $AWS_ACCOUNT_ID" >&2
+
 POLICY_NAME="${CLUSTER_NAME}-aws-efs-csi-policy"
 POLICY_ARN="arn:aws:iam::${AWS_ACCOUNT_ID}:policy/${POLICY_NAME}"
 ROLE_NAME="${CLUSTER_NAME}-aws-efs-csi-operator"
@@ -174,6 +169,7 @@ cat > "$TRUST_DOC" <<EOF
 }
 EOF
 
+echo "Creating IAM policy and role..." >&2
 ensure_policy_version "$POLICY_ARN" "$POLICY_NAME" "$POLICY_DOC"
 
 if aws iam get-role --role-name "$ROLE_NAME" >/dev/null 2>&1; then
@@ -190,6 +186,7 @@ aws iam attach-role-policy \
   --role-name "$ROLE_NAME" \
   --policy-arn "$POLICY_ARN" >/dev/null 2>&1 || true
 
+echo "Installing EFS CSI Driver Operator..." >&2
 cat <<EOF | oc apply -f -
 apiVersion: v1
 kind: Namespace
@@ -244,10 +241,34 @@ EOF
 wait_serviceaccount "$NAMESPACE" "aws-efs-csi-driver-controller-sa"
 wait_deployment_available "$NAMESPACE" "aws-efs-csi-driver-controller"
 
-ENV_PREFIX=$(echo "$CLUSTER_NAME" | tr '[:lower:]-' '[:upper:]_')
-echo "export ${ENV_PREFIX}_EFS_CSI_ROLE_NAME=$ROLE_NAME"
-echo "export ${ENV_PREFIX}_EFS_CSI_ROLE_ARN=$ROLE_ARN"
-echo "export ${ENV_PREFIX}_EFS_CSI_POLICY_NAME=$POLICY_NAME"
-echo "export ${ENV_PREFIX}_EFS_CSI_POLICY_ARN=$POLICY_ARN"
+echo "Attaching EFS CSI policy to worker role..." >&2
+INSTANCE_PROFILE_ARN=$(aws ec2 describe-instances \
+  --region "$REGION" \
+  --filters "Name=tag:api.openshift.com/name,Values=$CLUSTER_NAME" \
+            "Name=instance-state-name,Values=running" \
+  --query 'Reservations[0].Instances[0].IamInstanceProfile.Arn' \
+  --output text 2>/dev/null || echo "None")
+
+WORKER_ROLE=""
+if [ "$INSTANCE_PROFILE_ARN" != "None" ] && [ -n "$INSTANCE_PROFILE_ARN" ]; then
+  INSTANCE_PROFILE_NAME=$(echo "$INSTANCE_PROFILE_ARN" | sed 's|.*instance-profile/||')
+  WORKER_ROLE=$(aws iam get-instance-profile \
+    --instance-profile-name "$INSTANCE_PROFILE_NAME" \
+    --query 'InstanceProfile.Roles[0].RoleName' --output text 2>/dev/null || echo "")
+fi
+
+if [ -n "$WORKER_ROLE" ] && [ "$WORKER_ROLE" != "None" ]; then
+  aws iam attach-role-policy \
+    --role-name "$WORKER_ROLE" \
+    --policy-arn "$POLICY_ARN" >/dev/null 2>&1 || true
+  echo "Attached EFS CSI policy to worker role: $WORKER_ROLE" >&2
+else
+  echo "WARNING: Could not detect worker IAM role. Attach $POLICY_ARN to the worker role manually." >&2
+fi
+
+echo "export ${CLUSTER_NAME}_EFS_CSI_ROLE_NAME=$ROLE_NAME"
+echo "export ${CLUSTER_NAME}_EFS_CSI_ROLE_ARN=$ROLE_ARN"
+echo "export ${CLUSTER_NAME}_EFS_CSI_POLICY_NAME=$POLICY_NAME"
+echo "export ${CLUSTER_NAME}_EFS_CSI_POLICY_ARN=$POLICY_ARN"
 
 echo "EFS CSI setup completed for $CLUSTER_NAME." >&2

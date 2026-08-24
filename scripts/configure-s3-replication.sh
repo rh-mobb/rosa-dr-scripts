@@ -5,23 +5,27 @@ usage() {
   cat <<'EOF'
 Usage: configure-s3-replication.sh
 
-Requires PRIMARY_CLUSTER_NAME, DR_CLUSTER_NAME, PRIMARY_REGION, DR_REGION in dr.env.
+Requires PRIMARY_CLUSTER_NAME and DR_CLUSTER_NAME in the environment.
+Detects regions and AWS account from the cluster names.
 Creates app and OADP buckets, enables versioning, and configures one-way CRR.
 EOF
 }
 
 while [ $# -gt 0 ]; do
   case "$1" in
+    -h|--help) usage; exit 0 ;;
     *) echo "Unknown argument: $1" >&2; usage; exit 1 ;;
   esac
 done
 
-
 : "${PRIMARY_CLUSTER_NAME:?}"
 : "${DR_CLUSTER_NAME:?}"
-: "${PRIMARY_REGION:?}"
-: "${DR_REGION:?}"
-: "${AWS_ACCOUNT_ID:?}"
+
+PRIMARY_REGION=$(rosa describe cluster -c "$PRIMARY_CLUSTER_NAME" -o json | jq -r '.region.id')
+DR_REGION=$(rosa describe cluster -c "$DR_CLUSTER_NAME" -o json | jq -r '.region.id')
+AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+
+echo "Primary: $PRIMARY_CLUSTER_NAME ($PRIMARY_REGION)  DR: $DR_CLUSTER_NAME ($DR_REGION)" >&2
 
 
 ensure_policy() {
@@ -278,6 +282,9 @@ aws iam attach-role-policy --role-name "$APP_ROLE_DR" --policy-arn "$APP_POLICY_
 APP_S3_ROLE_ARN_PRIMARY=$(aws iam get-role --role-name "$APP_ROLE_PRIMARY" --query 'Role.Arn' --output text)
 APP_S3_ROLE_ARN_DR=$(aws iam get-role --role-name "$APP_ROLE_DR" --query 'Role.Arn' --output text)
 
+echo "export PRIMARY_REGION=$PRIMARY_REGION"
+echo "export DR_REGION=$DR_REGION"
+echo "export AWS_ACCOUNT_ID=$AWS_ACCOUNT_ID"
 echo "export APP_BUCKET_PRIMARY=$APP_BUCKET_PRIMARY"
 echo "export APP_BUCKET_DR=$APP_BUCKET_DR"
 echo "export OADP_BUCKET_PRIMARY=$OADP_BUCKET_PRIMARY"

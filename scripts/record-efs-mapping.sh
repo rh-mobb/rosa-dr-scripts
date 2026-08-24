@@ -3,30 +3,34 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: record-efs-mapping.sh --namespace NAMESPACE --region REGION --output FILE
+Usage: record-efs-mapping.sh --cluster NAME --namespace NAMESPACE --output FILE
 
 Records PVC -> PV -> EFS access point metadata for EFS CSI PVCs.
+Detects region from the cluster name.
 Run this while the primary cluster API is available.
 EOF
 }
 
+CLUSTER_NAME=""
 NAMESPACE=""
-REGION=""
 OUTPUT=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
+    --cluster) CLUSTER_NAME="$2"; shift 2 ;;
     --namespace) NAMESPACE="$2"; shift 2 ;;
-    --region) REGION="$2"; shift 2 ;;
     --output) OUTPUT="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown argument: $1" >&2; usage; exit 1 ;;
   esac
 done
 
+[ -n "$CLUSTER_NAME" ] || { echo "--cluster is required" >&2; exit 1; }
 [ -n "$NAMESPACE" ] || { echo "--namespace is required" >&2; exit 1; }
-[ -n "$REGION" ] || { echo "--region is required" >&2; exit 1; }
 [ -n "$OUTPUT" ] || { echo "--output is required" >&2; exit 1; }
+
+REGION=$(rosa describe cluster -c "$CLUSTER_NAME" -o json | jq -r '.region.id')
+echo "Cluster: $CLUSTER_NAME  Region: $REGION  Namespace: $NAMESPACE" >&2
 
 echo "namespace,pvc,pv,source_access_point_id,efs_path,posix_uid,posix_gid,root_owner_uid,root_owner_gid,root_permissions,statefulset_ordinal,requested_storage,access_modes" > "$OUTPUT"
 
@@ -71,4 +75,4 @@ for pvc in $(oc get pvc -n "$NAMESPACE" -o json | jq -r '.items[].metadata.name'
   echo "$NAMESPACE,$pvc,$pv,$access_point_id,$efs_path,$posix_uid,$posix_gid,$root_owner_uid,$root_owner_gid,$root_permissions,$ordinal,$requested_storage,$access_modes" >> "$OUTPUT"
 done
 
-echo "Wrote EFS PVC mapping to $OUTPUT"
+echo "Wrote EFS PVC mapping to $OUTPUT" >&2

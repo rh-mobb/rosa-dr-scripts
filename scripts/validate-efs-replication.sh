@@ -22,7 +22,6 @@ done
 : "${DR_REGION:?}"
 : "${PRIMARY_EFS:?}"
 : "${DR_EFS:?}"
-: "${DR_ENV:?}"
 
 export AWS_PAGER=""
 
@@ -69,8 +68,5 @@ status=$(aws efs describe-replication-configurations \
   --query 'Replications[0].Destinations[0].Status' \
   --output text)
 [ "$status" = "ENABLED" ] || { echo "EFS replication status is ${status}, not ENABLED." >&2; exit 1; }
-
-duplicates=$(cut -d= -f1 "$DR_ENV" | sort | uniq -d)
-[ -z "$duplicates" ] || { printf 'Duplicate dr.env keys:\n%s\n' "$duplicates" >&2; exit 1; }
 
 echo "EFS replication validation PASS."

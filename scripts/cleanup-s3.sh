@@ -5,7 +5,7 @@ usage() {
   cat <<'EOF'
 Usage: cleanup-s3.sh
 
-Deletes the four versioned S3 buckets recorded in dr.env.
+Deletes the four versioned S3 buckets.
 All object versions and delete markers are purged before bucket deletion.
 EOF
 }

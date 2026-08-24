@@ -5,7 +5,7 @@ usage() {
   cat <<'EOF'
 Usage: cleanup-efs.sh
 
-Deletes EFS resources recorded in dr.env in this order:
+Deletes EFS resources in this order:
 replication, access points, mount targets with wait, file systems, security groups.
 EOF
 }

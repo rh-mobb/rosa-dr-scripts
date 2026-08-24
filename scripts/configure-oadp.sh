@@ -3,35 +3,37 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: configure-oadp.sh --cluster NAME --region REGION --bucket BUCKET --role-suffix NAME
+Usage: configure-oadp.sh --cluster NAME --bucket BUCKET
 
-Installs OADP for the currently logged-in cluster and configures a DPA.
-Writes generated OADP IAM values to dr.env.
+Installs OADP on the currently logged-in cluster and configures a DPA.
+Detects region, AWS account, and OIDC endpoint from the cluster name.
+Requires OADP_BUCKET_PRIMARY and OADP_BUCKET_DR in the environment.
 EOF
 }
 
 CLUSTER_NAME=""
-REGION=""
 BUCKET=""
-ROLE_SUFFIX=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --cluster) CLUSTER_NAME="$2"; shift 2 ;;
-    --region) REGION="$2"; shift 2 ;;
     --bucket) BUCKET="$2"; shift 2 ;;
-    --role-suffix) ROLE_SUFFIX="$2"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
     *) echo "Unknown argument: $1" >&2; usage; exit 1 ;;
   esac
 done
 
 [ -n "$CLUSTER_NAME" ] || { echo "--cluster is required" >&2; exit 1; }
-[ -n "$REGION" ] || { echo "--region is required" >&2; exit 1; }
 [ -n "$BUCKET" ] || { echo "--bucket is required" >&2; exit 1; }
-[ -n "$ROLE_SUFFIX" ] || { echo "--role-suffix is required" >&2; exit 1; }
 
-: "${AWS_ACCOUNT_ID:?}"
+REGION=$(rosa describe cluster -c "$CLUSTER_NAME" -o json | jq -r '.region.id')
+AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+OIDC_ENDPOINT=$(rosa describe cluster -c "$CLUSTER_NAME" -o json | jq -r '.aws.sts.oidc_endpoint_url' | sed 's|https://||')
 
+: "${OADP_BUCKET_PRIMARY:?}"
+: "${OADP_BUCKET_DR:?}"
+
+echo "Cluster: $CLUSTER_NAME  Region: $REGION  Bucket: $BUCKET" >&2
 
 wait_subscription_csv_succeeded() {
   local namespace="$1"
@@ -107,8 +109,7 @@ ensure_policy() {
   echo "$policy_arn"
 }
 
-OIDC_ENDPOINT=$(rosa describe cluster -c "$CLUSTER_NAME" -o json | jq -r '.aws.sts.oidc_endpoint_url' | sed 's|https://||')
-POLICY_NAME="${PRIMARY_CLUSTER_NAME}-oadp-velero"
+POLICY_NAME="${CLUSTER_NAME}-oadp-velero"
 ROLE_NAME="${CLUSTER_NAME}-oadp-velero"
 
 POLICY_DOC=$(mktemp)
@@ -139,6 +140,7 @@ cat > "$POLICY_DOC" <<EOF
 }
 EOF
 
+echo "Creating OADP IAM policy and role..." >&2
 POLICY_ARN=$(ensure_policy "$POLICY_NAME" "$POLICY_DOC")
 
 cat > "$TRUST_DOC" <<EOF
@@ -178,6 +180,7 @@ aws iam attach-role-policy \
 
 ROLE_ARN=$(aws iam get-role --role-name "$ROLE_NAME" --query 'Role.Arn' --output text)
 
+echo "Installing OADP operator..." >&2
 oc create namespace openshift-adp >/dev/null 2>&1 || true
 
 cat <<'EOF' | oc apply -f -
@@ -249,8 +252,7 @@ spec:
           key: cloud
 EOF
 
-ENV_PREFIX=$(echo "$ROLE_SUFFIX" | tr '[:lower:]-' '[:upper:]_')
 echo "export OADP_POLICY_ARN=$POLICY_ARN"
-echo "export OADP_ROLE_ARN_${ENV_PREFIX}=$ROLE_ARN"
+echo "export OADP_ROLE_ARN_${CLUSTER_NAME}=$ROLE_ARN"
 
 echo "OADP configuration submitted for $CLUSTER_NAME. Verify BSL availability before continuing." >&2

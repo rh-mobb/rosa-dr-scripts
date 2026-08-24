@@ -5,7 +5,7 @@ usage() {
   cat <<'EOF'
 Usage: cleanup-iam.sh
 
-Deletes helper-created IAM roles and customer-managed policies recorded in dr.env.
+Deletes helper-created IAM roles and customer-managed policies.
 Attached managed policies and inline role policies are removed before role deletion.
 Non-default policy versions are removed before policy deletion.
 EOF

@@ -3,51 +3,30 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: configure-efs-replication.sh [options]
+Usage: configure-efs-replication.sh
 
-Requires PRIMARY_CLUSTER_NAME, DR_CLUSTER_NAME, PRIMARY_REGION, DR_REGION in dr.env.
-
-Options:
-  --primary-worker-sg SG_ID   Worker/node security group allowed to mount primary EFS
-  --dr-worker-sg SG_ID        Worker/node security group allowed to mount DR EFS
-  --primary-subnets IDS       Comma-separated primary subnet IDs for EFS mount targets
-  --dr-subnets IDS            Comma-separated DR subnet IDs for EFS mount targets
+Requires PRIMARY_CLUSTER_NAME and DR_CLUSTER_NAME in the environment.
+Detects regions, worker security groups, and subnets from the cluster names.
 
 Creates or reuses named EFS security groups/file systems, creates missing mount
 targets, and configures primary-to-DR EFS replication.
 EOF
 }
 
-PRIMARY_WORKER_SECURITY_GROUP_ID="${PRIMARY_WORKER_SECURITY_GROUP_ID:-}"
-DR_WORKER_SECURITY_GROUP_ID="${DR_WORKER_SECURITY_GROUP_ID:-}"
-PRIMARY_SUBNET_IDS="${PRIMARY_SUBNET_IDS:-}"
-DR_SUBNET_IDS="${DR_SUBNET_IDS:-}"
-CLI_PRIMARY_WORKER_SECURITY_GROUP_ID=""
-CLI_DR_WORKER_SECURITY_GROUP_ID=""
-CLI_PRIMARY_SUBNET_IDS=""
-CLI_DR_SUBNET_IDS=""
-
 while [ $# -gt 0 ]; do
   case "$1" in
-    --dr-worker-sg) CLI_DR_WORKER_SECURITY_GROUP_ID="$2"; shift 2 ;;
-    --primary-subnets) CLI_PRIMARY_SUBNET_IDS="$2"; shift 2 ;;
-    --dr-subnets) CLI_DR_SUBNET_IDS="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown argument: $1" >&2; usage; exit 1 ;;
   esac
 done
 
-
 : "${PRIMARY_CLUSTER_NAME:?}"
 : "${DR_CLUSTER_NAME:?}"
-: "${PRIMARY_REGION:?}"
-: "${DR_REGION:?}"
 
-PRIMARY_WORKER_SECURITY_GROUP_ID="${CLI_PRIMARY_WORKER_SECURITY_GROUP_ID:-${PRIMARY_WORKER_SECURITY_GROUP_ID:-${PRIMARY_WORKER_SG:-}}}"
-DR_WORKER_SECURITY_GROUP_ID="${CLI_DR_WORKER_SECURITY_GROUP_ID:-${DR_WORKER_SECURITY_GROUP_ID:-${DR_WORKER_SG:-}}}"
-PRIMARY_SUBNET_IDS="${CLI_PRIMARY_SUBNET_IDS:-${PRIMARY_SUBNET_IDS:-${PRIMARY_EFS_SUBNET_IDS:-}}}"
-DR_SUBNET_IDS="${CLI_DR_SUBNET_IDS:-${DR_SUBNET_IDS:-${DR_EFS_SUBNET_IDS:-}}}"
+PRIMARY_REGION=$(rosa describe cluster -c "$PRIMARY_CLUSTER_NAME" -o json | jq -r '.region.id')
+DR_REGION=$(rosa describe cluster -c "$DR_CLUSTER_NAME" -o json | jq -r '.region.id')
 
+echo "Primary: $PRIMARY_CLUSTER_NAME ($PRIMARY_REGION)  DR: $DR_CLUSTER_NAME ($DR_REGION)" >&2
 
 csv_to_words() {
   echo "$1" | tr ',' ' '
@@ -63,14 +42,15 @@ first_csv_value() {
   echo "$1" | awk -F, '{print $1}'
 }
 
-require_value() {
-  local name="$1"
-  local value="$2"
-  if [ -z "$value" ] || [ "$value" = "null" ] || [ "$value" = "None" ]; then
-    echo "Missing required value: ${name}." >&2
-    echo "Set it in dr.env or pass the corresponding command-line option." >&2
-    exit 1
-  fi
+discover_worker_sg() {
+  local cluster_name="$1"
+  local region="$2"
+  aws ec2 describe-instances \
+    --region "$region" \
+    --filters "Name=tag:api.openshift.com/name,Values=$cluster_name" \
+              "Name=instance-state-name,Values=running" \
+    --query 'Reservations[0].Instances[0].SecurityGroups[0].GroupId' \
+    --output text 2>/dev/null || echo "None"
 }
 
 wait_efs_available() {
@@ -81,7 +61,7 @@ wait_efs_available() {
     --region "$region" \
     --query 'FileSystems[0].LifeCycleState' \
     --output text)" = "available" ]; do
-    echo "Waiting for EFS $fs_id in $region..."
+    echo "Waiting for EFS $fs_id in $region..." >&2
     sleep 10
   done
 }
@@ -94,7 +74,7 @@ wait_mount_targets() {
     --region "$region" \
     --query 'length(MountTargets[?LifeCycleState!=`available`])' \
     --output text)" = "0" ]; do
-    echo "Waiting for mount targets for $fs_id in $region..."
+    echo "Waiting for mount targets for $fs_id in $region..." >&2
     sleep 10
   done
 }
@@ -193,17 +173,31 @@ ensure_mount_target() {
     --security-groups "$sg_id" >/dev/null
 }
 
+PRIMARY_SUBNET_IDS=$(discover_subnets "$PRIMARY_CLUSTER_NAME")
+DR_SUBNET_IDS=$(discover_subnets "$DR_CLUSTER_NAME")
+
 if [ -z "$PRIMARY_SUBNET_IDS" ]; then
-  PRIMARY_SUBNET_IDS=$(discover_subnets "$PRIMARY_CLUSTER_NAME")
+  echo "Could not discover subnets for $PRIMARY_CLUSTER_NAME" >&2
+  exit 1
 fi
 if [ -z "$DR_SUBNET_IDS" ]; then
-  DR_SUBNET_IDS=$(discover_subnets "$DR_CLUSTER_NAME")
+  echo "Could not discover subnets for $DR_CLUSTER_NAME" >&2
+  exit 1
 fi
 
-require_value "PRIMARY_SUBNET_IDS" "$PRIMARY_SUBNET_IDS"
-require_value "DR_SUBNET_IDS" "$DR_SUBNET_IDS"
-require_value "PRIMARY_WORKER_SECURITY_GROUP_ID" "$PRIMARY_WORKER_SECURITY_GROUP_ID"
-require_value "DR_WORKER_SECURITY_GROUP_ID" "$DR_WORKER_SECURITY_GROUP_ID"
+PRIMARY_WORKER_SECURITY_GROUP_ID=$(discover_worker_sg "$PRIMARY_CLUSTER_NAME" "$PRIMARY_REGION")
+DR_WORKER_SECURITY_GROUP_ID=$(discover_worker_sg "$DR_CLUSTER_NAME" "$DR_REGION")
+
+if [ "$PRIMARY_WORKER_SECURITY_GROUP_ID" = "None" ] || [ -z "$PRIMARY_WORKER_SECURITY_GROUP_ID" ]; then
+  echo "Could not detect worker security group for $PRIMARY_CLUSTER_NAME. Ensure worker nodes are running." >&2
+  exit 1
+fi
+if [ "$DR_WORKER_SECURITY_GROUP_ID" = "None" ] || [ -z "$DR_WORKER_SECURITY_GROUP_ID" ]; then
+  echo "Could not detect worker security group for $DR_CLUSTER_NAME. Ensure worker nodes are running." >&2
+  exit 1
+fi
+
+echo "Primary worker SG: $PRIMARY_WORKER_SECURITY_GROUP_ID  DR worker SG: $DR_WORKER_SECURITY_GROUP_ID" >&2
 
 PRIMARY_SUBNET=$(first_csv_value "$PRIMARY_SUBNET_IDS")
 DR_SUBNET=$(first_csv_value "$DR_SUBNET_IDS")
@@ -258,6 +252,8 @@ for subnet in $(csv_to_words "$DR_SUBNET_IDS"); do
 done
 wait_mount_targets "$DR_EFS" "$DR_REGION"
 
+echo "export PRIMARY_REGION=$PRIMARY_REGION"
+echo "export DR_REGION=$DR_REGION"
 echo "export PRIMARY_SUBNET_IDS=$PRIMARY_SUBNET_IDS"
 echo "export DR_SUBNET_IDS=$DR_SUBNET_IDS"
 echo "export PRIMARY_WORKER_SECURITY_GROUP_ID=$PRIMARY_WORKER_SECURITY_GROUP_ID"
